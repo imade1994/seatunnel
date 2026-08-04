@@ -30,6 +30,10 @@ public class SeaTunnelEngineClusterServerExample {
 
     public static void main(String[] args) throws CommandException {
         ServerCommandArgs serverCommandArgs = new ServerCommandArgs();
+        serverCommandArgs.setClusterRole("master");
+        System.setProperty("hazelcast.config", "E:\\IdeaProjects\\datagovernance\\data-seatunnel-master\\src\\main\\resources\\seaTunnel\\hazelcast-master.yaml");
+        System.setProperty("seatunnel.config", "E:\\IdeaProjects\\datagovernance\\data-seatunnel-master\\src\\main\\resources\\seaTunnel\\seatunnel.yaml");
+        System.setProperty("SEATUNNEL_HOME", "E:\\IdeaProjects\\datagovernance\\data-seatunnel-master");
         SeaTunnel.run(serverCommandArgs.buildCommand());
     }
 }

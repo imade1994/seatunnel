@@ -110,6 +110,9 @@ public class ArrowToSeatunnelRowReader implements AutoCloseable {
                 }
                 convertSeatunnelRow();
                 this.readRowCount += root.getRowCount();
+                // Release Arrow vectors from this batch to prevent memory leak
+                // when the next loadNextBatch() call replaces the root's vectors.
+                root.clear();
             }
             return this;
         } catch (IOException e) {
@@ -205,13 +208,32 @@ public class ArrowToSeatunnelRowReader implements AutoCloseable {
                 }
             case TIMESTAMP:
                 if (fieldValue instanceof Long) {
-                    // this TIMESTAMP value may be  SECOND not  milliseconds
+                    // Arrow stores TIMESTAMP as an epoch offset whose unit depends on the
+                    // MinorType (SECOND / MILLI / MICRO / NANO). The unit must be taken into
+                    // account when converting back to LocalDateTime, otherwise the value is
+                    // misinterpreted (e.g. a microsecond value treated as milliseconds gets
+                    // inflated ~1000x and produces a year like 58538).
                     if (Types.MinorType.TIMESTAMPSEC == minorType
                             || Types.MinorType.TIMESTAMPSECTZ == minorType) {
                         return Instant.ofEpochSecond((Long) fieldValue)
                                 .atZone(ZoneId.systemDefault())
                                 .toLocalDateTime();
+                    } else if (Types.MinorType.TIMESTAMPNANO == minorType
+                            || Types.MinorType.TIMESTAMPNANOTZ == minorType) {
+                        return Instant.ofEpochSecond(
+                                        Math.floorDiv((Long) fieldValue, 1_000_000_000L),
+                                        Math.floorMod((Long) fieldValue, 1_000_000_000L))
+                                .atZone(ZoneId.systemDefault())
+                                .toLocalDateTime();
+                    } else if (Types.MinorType.TIMESTAMPMICRO == minorType
+                            || Types.MinorType.TIMESTAMPMICROTZ == minorType) {
+                        return Instant.ofEpochSecond(
+                                        Math.floorDiv((Long) fieldValue, 1_000_000L),
+                                        Math.floorMod((Long) fieldValue, 1_000_000L) * 1_000L)
+                                .atZone(ZoneId.systemDefault())
+                                .toLocalDateTime();
                     } else {
+                        // TIMESTAMPMILLI and TIMESTAMPMILLITZ
                         return Instant.ofEpochMilli((Long) fieldValue)
                                 .atZone(ZoneId.systemDefault())
                                 .toLocalDateTime();
@@ -319,18 +341,33 @@ public class ArrowToSeatunnelRowReader implements AutoCloseable {
 
     @Override
     public void close() {
+        RuntimeException closeException = null;
         try {
-            if (root != null) {
-                root.close();
-            }
-            if (rootAllocator != null) {
-                rootAllocator.close();
-            }
+            // ArrowStreamReader must be closed before RootAllocator.
+            // ArrowStreamReader internally closes VectorSchemaRoot and releases all
+            // Arrow buffer allocations back to the allocator. If the allocator is
+            // closed first, it detects unreleased memory and throws
+            // IllegalStateException ("Memory was leaked by query").
             if (arrowStreamReader != null) {
                 arrowStreamReader.close();
             }
         } catch (IOException e) {
-            throw new RuntimeException("failed to close arrow stream reader.", e);
+            closeException = new RuntimeException("failed to close arrow stream reader.", e);
+        } finally {
+            try {
+                if (rootAllocator != null) {
+                    rootAllocator.close();
+                }
+            } catch (RuntimeException e) {
+                if (closeException == null) {
+                    closeException = e;
+                } else {
+                    closeException.addSuppressed(e);
+                }
+            }
+        }
+        if (closeException != null) {
+            throw closeException;
         }
     }
 }

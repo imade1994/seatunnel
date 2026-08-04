@@ -235,7 +235,7 @@ map:
         namespace: /tmp/seatunnel/imap
         clusterName: seatunnel-cluster
         storage.type: hdfs
-        fs.defaultFS: hdfs://localhost:9000
+        fs.defaultFS: hdfs://10.10.96.67:9000
 ```
 
 If there is no HDFS and your cluster has only one node, you can configure it like this to use local files:

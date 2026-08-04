@@ -1051,6 +1051,26 @@
         <url>https://github.com/apache/seatunnel/issues</url>
     </issueManagement>
 
+    <repositories>
+        <repository>
+            <id>huaweiCloud</id>
+            <url>https://repo.huaweicloud.com/repository/maven/huaweicloudsdk/</url>
+        </repository>
+    </repositories>
+
+    <distributionManagement>
+        <repository>
+            <id>nexus</id>
+            <name>hlxd-releases</name>
+            <url>http://nexus.hlxd.com/repository/hlxd-releases/</url>
+        </repository>
+        <snapshotRepository>
+            <id>nexus</id>
+            <name>hlxd-snapshots</name>
+            <url>http://nexus.hlxd.com/repository/hlxd-snapshots/</url>
+        </snapshotRepository>
+    </distributionManagement>
+
     <profiles>
         <profile>
             <id>release</id>
