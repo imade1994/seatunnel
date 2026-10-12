@@ -34,6 +34,7 @@ import org.apache.seatunnel.engine.server.dag.physical.PipelineLocation;
 import org.apache.seatunnel.engine.server.execution.ExecutionState;
 import org.apache.seatunnel.engine.server.execution.PendingJobInfo;
 import org.apache.seatunnel.engine.server.execution.TaskGroupLocation;
+import org.apache.seatunnel.engine.server.persistence.FinishedJobHistoryReader;
 import org.apache.seatunnel.engine.server.telemetry.log.operation.CleanLogOperation;
 import org.apache.seatunnel.engine.server.utils.NodeEngineUtil;
 
@@ -174,7 +175,7 @@ public class JobHistoryService {
 
         Stream.concat(
                         Stream.concat(runningJobStateList.stream(), pendingJobStateList.stream()),
-                        finishedJobStateImap.values().stream()
+                        loadFinishedJobStates().stream()
                                 .filter(
                                         jobState ->
                                                 !runningJonIds.contains(jobState.getJobId())
@@ -193,6 +194,22 @@ public class JobHistoryService {
                             status.add(jobStatusData);
                         });
         return status;
+    }
+
+    /**
+     * 已完成作业的状态。历史 map 启动时被跳过加载，而 Hazelcast 的 {@code IMap#values()} 不读穿、只扫 内存，所以这里直查存储；存储不可用时回退到内存
+     * map（那样只含本次启动之后完成的作业）。
+     */
+    private List<JobState> loadFinishedJobStates() {
+        FinishedJobHistoryReader reader =
+                FinishedJobHistoryReader.forMap(
+                        nodeEngine.getHazelcastInstance(), finishedJobStateImap.getName());
+        if (reader == null) {
+            return new ArrayList<>(finishedJobStateImap.values());
+        }
+        return reader.loadLatest(reader.getQueryLimit()).values().stream()
+                .map(JobState.class::cast)
+                .collect(Collectors.toList());
     }
 
     // Get detailed status of a single job

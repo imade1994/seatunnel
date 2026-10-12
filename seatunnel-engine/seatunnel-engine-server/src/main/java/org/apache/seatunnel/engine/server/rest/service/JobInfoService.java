@@ -29,6 +29,7 @@ import org.apache.seatunnel.engine.core.job.JobInfo;
 import org.apache.seatunnel.engine.server.SeaTunnelServer;
 import org.apache.seatunnel.engine.server.master.JobHistoryService.JobState;
 import org.apache.seatunnel.engine.server.operation.GetJobMetricsOperation;
+import org.apache.seatunnel.engine.server.persistence.FinishedJobHistoryReader;
 import org.apache.seatunnel.engine.server.rest.ConfigFormat;
 import org.apache.seatunnel.engine.server.rest.RestConstant;
 import org.apache.seatunnel.engine.server.utils.NodeEngineUtil;
@@ -42,10 +43,13 @@ import lombok.extern.slf4j.Slf4j;
 import scala.Tuple2;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.apache.seatunnel.engine.server.rest.RestConstant.CONFIG_FORMAT;
 
@@ -81,22 +85,23 @@ public class JobInfoService extends BaseService {
                                     .getMap(Constant.IMAP_FINISHED_JOB_VERTEX_INFO)
                                     .get(jobId);
             return getJobInfoJson(
-                    finishedJobState, finishedJobMetrics.toJsonString(), finishedJobDAGInfo);
+                    finishedJobState,
+                    finishedJobMetrics == null
+                            ? JobMetrics.empty().toJsonString()
+                            : finishedJobMetrics.toJsonString(),
+                    finishedJobDAGInfo);
         } else {
             return new JsonObject().add(RestConstant.JOB_ID, jobId.toString());
         }
     }
 
     public JsonArray getJobsByStateJson(String state) {
-        IMap<Long, JobState> finishedJob =
-                nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_FINISHED_JOB_STATE);
-
-        IMap<Long, JobDAGInfo> finishedJobDAGInfo =
-                nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_FINISHED_JOB_VERTEX_INFO);
+        List<JobState> finishedJobs = loadFinishedJobStates();
+        Map<Long, JobDAGInfo> finishedJobDAGInfo = loadFinishedJobDagInfos(finishedJobs);
 
         SeaTunnelServer seaTunnelServer = getSeaTunnelServer(true);
 
-        return finishedJob.values().stream()
+        return finishedJobs.stream()
                 .filter(
                         jobState -> {
                             if (state.isEmpty()) {
@@ -127,6 +132,48 @@ public class JobInfoService extends BaseService {
                                     jobState, jobMetrics, finishedJobDAGInfo.get(jobId));
                         })
                 .collect(JsonArray::new, JsonArray::add, JsonArray::add);
+    }
+
+    /**
+     * 已完成作业的状态列表。历史 map 启动时被跳过加载，而 Hazelcast 的 {@code IMap#values()} 不读穿、 只扫内存，所以这里直查存储；存储不可用时回退到内存
+     * map（那样只含本次启动之后完成的作业）。
+     */
+    private List<JobState> loadFinishedJobStates() {
+        FinishedJobHistoryReader reader = historyReader(Constant.IMAP_FINISHED_JOB_STATE);
+        if (reader == null) {
+            return nodeEngine.getHazelcastInstance().getMap(Constant.IMAP_FINISHED_JOB_STATE)
+                    .values().stream()
+                    .map(JobState.class::cast)
+                    .collect(Collectors.toList());
+        }
+        return reader.loadLatest(reader.getQueryLimit()).values().stream()
+                .map(JobState.class::cast)
+                .collect(Collectors.toList());
+    }
+
+    /** 与 {@link #loadFinishedJobStates()} 同理，批量取 DAG 信息（逐条 {@code get} 会开 N 次连接）。 */
+    private Map<Long, JobDAGInfo> loadFinishedJobDagInfos(List<JobState> finishedJobs) {
+        List<Long> jobIds =
+                finishedJobs.stream().map(JobState::getJobId).collect(Collectors.toList());
+        if (jobIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        FinishedJobHistoryReader reader = historyReader(Constant.IMAP_FINISHED_JOB_VERTEX_INFO);
+        if (reader == null) {
+            IMap<Long, JobDAGInfo> dagInfoMap =
+                    nodeEngine
+                            .getHazelcastInstance()
+                            .getMap(Constant.IMAP_FINISHED_JOB_VERTEX_INFO);
+            return dagInfoMap.getAll(new HashSet<>(jobIds));
+        }
+        Map<Long, JobDAGInfo> result = new HashMap<>(jobIds.size());
+        reader.loadByIds(jobIds)
+                .forEach((key, value) -> result.put((Long) key, (JobDAGInfo) value));
+        return result;
+    }
+
+    private FinishedJobHistoryReader historyReader(String mapName) {
+        return FinishedJobHistoryReader.forMap(nodeEngine.getHazelcastInstance(), mapName);
     }
 
     public JsonArray getRunningJobsJson() {

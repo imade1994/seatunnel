@@ -78,7 +78,9 @@ public class FileMapStore implements MapStore<Object, Object>, MapLoaderLifecycl
     @SneakyThrows
     @Override
     public Object load(Object key) {
-        return null;
+        // 读穿：map 在启动时被跳过加载（见 StorageProperties#isHistoryMap）后，这里是唯一能把
+        // 单个 entry 取回来的路径。IMap#get 未命中内存时会回调本方法。
+        return mapStorage.load(key);
     }
 
     @SneakyThrows
@@ -86,7 +88,15 @@ public class FileMapStore implements MapStore<Object, Object>, MapLoaderLifecycl
     public Map<Object, Object> loadAll(Collection<Object> keys) {
         Map<Object, Object> allMap = mapStorage.loadAll();
         Map<Object, Object> retMap = new HashMap<>();
-        keys.forEach(key -> retMap.put(key, allMap.get(key)));
+        for (Object key : keys) {
+            Object value = allMap.get(key);
+            // MapLoader 契约：返回的 Map 不得含 null value，否则 Hazelcast 的
+            // DefaultRecordStore#checkKeyAndValue 会抛 NPE，且整批 PutFromLoadAllOperation 失败。
+            // 取值可能为空（loadAllKeys 与 loadAll 是两次独立查询，期间该行可能已被写入/删除）。
+            if (value != null) {
+                retMap.put(key, value);
+            }
+        }
 
         return Collections.unmodifiableMap(retMap);
     }

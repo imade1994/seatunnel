@@ -64,6 +64,20 @@ public interface IMapStorage {
      */
     public Set<Object> deleteAll(Collection<Object> keys);
 
+    /**
+     * Load a single key on demand (read-through). Called by the engine when a {@code get()} misses
+     * the in-memory IMap, which is how maps skipped at startup stay queryable.
+     *
+     * <p>Default is {@code null}, i.e. no read-through — same behaviour as before this method
+     * existed, so existing plugins stay source compatible.
+     *
+     * @param key storage key
+     * @return the stored value, or null if absent / this plugin does not support read-through
+     */
+    default Object load(Object key) {
+        return null;
+    }
+
     public Map<Object, Object> loadAll() throws IOException;
 
     public Set<Object> loadAllKeys();
