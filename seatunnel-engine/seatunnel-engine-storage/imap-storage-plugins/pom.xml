@@ -33,6 +33,7 @@
 
     <modules>
         <module>imap-storage-file</module>
+        <module>imap-storage-mysql</module>
     </modules>
 
     <dependencies>
