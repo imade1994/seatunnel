@@ -39,6 +39,7 @@ import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -152,14 +153,17 @@ public class TdengineSnapshotFetchTask implements FetchTask<SourceSplitBase> {
         sb.append("SELECT tbname, * FROM ").append(sourceConfig.getDatabase());
         sb.append(".").append(sourceConfig.getStable());
 
-        // If specific table names were provided, filter by them
-        if (sourceConfig.getTableNames() != null && !sourceConfig.getTableNames().isEmpty()) {
+        // If specific sub-table names were provided, filter by them. The super table name itself
+        // is filtered out by getEffectiveSubTableNames() because tbname is a sub-table name and
+        // matching it against the super table name would drop every row.
+        List<String> subTableNames = sourceConfig.getEffectiveSubTableNames();
+        if (subTableNames != null && !subTableNames.isEmpty()) {
             sb.append(" WHERE tbname IN (");
-            for (int i = 0; i < sourceConfig.getTableNames().size(); i++) {
+            for (int i = 0; i < subTableNames.size(); i++) {
                 if (i > 0) {
                     sb.append(", ");
                 }
-                sb.append("'").append(sourceConfig.getTableNames().get(i)).append("'");
+                sb.append("'").append(subTableNames.get(i)).append("'");
             }
             sb.append(")");
         }

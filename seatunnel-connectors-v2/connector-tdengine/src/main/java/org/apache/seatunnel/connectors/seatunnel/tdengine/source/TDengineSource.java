@@ -163,10 +163,9 @@ public class TDengineSource
 
     private SeaTunnelRowType addHiddenAttribute(
             List<String> fieldNames, List<SeaTunnelDataType<?>> fieldTypes) {
-        // add subtable_name and tags to `seaTunnelRowType`
-        // 0-subtable_name / 1-n field_names /
-        String[] newFieldNames =
-                ArrayUtils.add(fieldNames.toArray(new String[0]), 0, "subtable_name");
+        // add tbname (sub-table name) and tags to `seaTunnelRowType`
+        // 0-tbname / 1-n field_names /
+        String[] newFieldNames = ArrayUtils.add(fieldNames.toArray(new String[0]), 0, "tbname");
         // n+1-> tags
         SeaTunnelDataType<?>[] newFieldTypes =
                 ArrayUtils.add(

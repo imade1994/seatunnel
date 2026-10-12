@@ -151,10 +151,35 @@ public class TdengineSourceConfig implements SourceConfig {
     }
 
     /**
+     * Return the configured table names that are actually sub-table names, excluding references to
+     * the super table itself.
+     *
+     * <p>The {@code table-names} option is documented to hold sub-table names, but the surrounding
+     * framework may pass the super table name (as {@code stable} or {@code database.stable}). A
+     * {@code WHERE tbname IN (...)} clause that contains the super table name matches nothing,
+     * because {@code tbname} is the sub-table name. Returning an empty list means "no sub-table
+     * filter, capture all sub-tables".
+     */
+    public List<String> getEffectiveSubTableNames() {
+        if (tableNames == null) {
+            return null;
+        }
+        String fullName = database + "." + stable;
+        return tableNames.stream()
+                .filter(
+                        n ->
+                                n != null
+                                        && !n.trim().isEmpty()
+                                        && !n.equals(stable)
+                                        && !n.equals(fullName))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
      * Build the SQL to create the TMQ topic if it doesn't exist.
      *
-     * <p>The topic is created as a SELECT on the super table. If specific table names are provided,
-     * the SELECT is scoped to those sub-tables.
+     * <p>The topic is created as a SELECT on the super table. If specific sub-table names are
+     * provided, the SELECT is scoped to those sub-tables.
      */
     public String buildCreateTopicSQL() {
         String topicName = getEffectiveTopic();
@@ -162,13 +187,14 @@ public class TdengineSourceConfig implements SourceConfig {
         sb.append("CREATE TOPIC IF NOT EXISTS ").append(topicName);
         sb.append(" AS SELECT tbname, * FROM ").append(database).append(".").append(stable);
 
-        if (tableNames != null && !tableNames.isEmpty()) {
+        List<String> subTableNames = getEffectiveSubTableNames();
+        if (subTableNames != null && !subTableNames.isEmpty()) {
             sb.append(" WHERE tbname IN (");
-            for (int i = 0; i < tableNames.size(); i++) {
+            for (int i = 0; i < subTableNames.size(); i++) {
                 if (i > 0) {
                     sb.append(", ");
                 }
-                sb.append("'").append(tableNames.get(i)).append("'");
+                sb.append("'").append(subTableNames.get(i)).append("'");
             }
             sb.append(")");
         }
