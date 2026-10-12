@@ -892,15 +892,24 @@ public class JobMaster {
 
     public void removeMetricsContext(
             PipelineLocation pipelineLocation, PipelineStatus pipelineStatus) {
-        if ((pipelineStatus.equals(PipelineStatus.FINISHED)
-                        && !checkpointManager.isPipelineSavePointEnd(pipelineLocation))
-                || pipelineStatus.equals(PipelineStatus.CANCELED)) {
+        // Clear metrics on every terminal state: FINISHED / CANCELED / FAILED
+        // (PipelineStatus#isEndState). Previously FAILED was missing, so every failed pipeline
+        // leaked all of its task metrics into engine_runningJobMetrics forever. That map defaults
+        // to job-metrics-partition-count=1, i.e. a single key holding every job's task metrics,
+        // which is then fully deserialized/re-serialized on every metrics backup -> heap growth.
+        if (!pipelineStatus.isEndState()) {
+            return;
+        }
+        // Keep the existing savepoint exception: a savepoint-finished pipeline is not really done.
+        if (pipelineStatus.equals(PipelineStatus.FINISHED)
+                && checkpointManager.isPipelineSavePointEnd(pipelineLocation)) {
+            return;
+        }
 
-            try {
-                seaTunnelServer.removeMetrics(pipelineLocation);
-            } catch (Exception e) {
-                LOGGER.severe("failed to remove metrics", e);
-            }
+        try {
+            seaTunnelServer.removeMetrics(pipelineLocation);
+        } catch (Exception e) {
+            LOGGER.severe("failed to remove metrics", e);
         }
     }
 
