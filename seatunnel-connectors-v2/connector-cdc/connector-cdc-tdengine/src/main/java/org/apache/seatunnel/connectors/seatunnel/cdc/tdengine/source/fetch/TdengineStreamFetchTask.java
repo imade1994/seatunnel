@@ -325,12 +325,24 @@ public class TdengineStreamFetchTask implements FetchTask<SourceSplitBase> {
                 // TDengine JDBC driver returns VARCHAR/BINARY as byte[], convert to String.
                 // TIMESTAMP columns use INT64 in the Kafka Connect schema, so keep as epoch-
                 // millis; the deserializer's coerceType will convert Long → LocalDateTime.
+                // The schema built above declares INT64 for the whole integer family and FLOAT64
+                // for the whole floating-point family, so the value has to be widened to match it:
+                // ConnectSchema rejects an Integer where the field says INT64, and that rejection
+                // is caught below and drops the record.
                 if (val instanceof byte[]) {
                     val = new String((byte[]) val);
                 } else if (val instanceof Timestamp) {
                     val = ((Timestamp) val).getTime();
                 } else if (val instanceof java.util.Date) {
                     val = ((java.util.Date) val).getTime();
+                } else if (val instanceof Integer) {
+                    val = ((Integer) val).longValue();
+                } else if (val instanceof Short) {
+                    val = ((Short) val).longValue();
+                } else if (val instanceof Byte) {
+                    val = ((Byte) val).longValue();
+                } else if (val instanceof Float) {
+                    val = ((Float) val).doubleValue();
                 }
                 value.put(fieldName, val);
             }
