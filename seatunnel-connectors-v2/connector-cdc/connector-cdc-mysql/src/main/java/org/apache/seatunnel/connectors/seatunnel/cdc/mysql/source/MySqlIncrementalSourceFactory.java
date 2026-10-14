@@ -23,7 +23,9 @@ import org.apache.seatunnel.api.source.SeaTunnelSource;
 import org.apache.seatunnel.api.source.SourceSplit;
 import org.apache.seatunnel.api.table.catalog.CatalogTable;
 import org.apache.seatunnel.api.table.catalog.CatalogTableUtil;
+import org.apache.seatunnel.api.table.catalog.PrimaryKey;
 import org.apache.seatunnel.api.table.catalog.TablePath;
+import org.apache.seatunnel.api.table.catalog.TableSchema;
 import org.apache.seatunnel.api.table.connector.TableSource;
 import org.apache.seatunnel.api.table.factory.Factory;
 import org.apache.seatunnel.api.table.factory.TableSourceFactoryContext;
@@ -41,6 +43,7 @@ import com.google.auto.service.AutoService;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -120,7 +123,8 @@ public class MySqlIncrementalSourceFactory extends BaseChangeStreamTableSourceFa
             }
             ReadonlyConfig config = context.getOptions();
             List<CatalogTable> catalogTables =
-                    CatalogTableUtil.getCatalogTables(config, context.getClassLoader());
+                    dropTablesWithoutPrimaryKey(
+                            CatalogTableUtil.getCatalogTables(config, context.getClassLoader()));
             boolean enableSchemaChange =
                     context.getOptions()
                             .getOptional(SourceOptions.SCHEMA_CHANGES_ENABLED)
@@ -158,5 +162,41 @@ public class MySqlIncrementalSourceFactory extends BaseChangeStreamTableSourceFa
             return (SeaTunnelSource<T, SplitT, StateT>)
                     new MySqlIncrementalSource<>(config, catalogTables);
         };
+    }
+
+    /**
+     * CDC needs a primary key: it is the split key of the snapshot and the only way the sink can
+     * tell rows apart on update or delete (see docs/zh/faq.md). An object without one - a view
+     * always, and a primary-key-less base table as well - still reaches this table set, because
+     * {@link CatalogTableUtil#getCatalogTables} resolves the config through the JDBC catalog and
+     * MySQL's {@code SHOW TABLES} lists views along with tables. Such an object then fails the
+     * whole job at the sink's save mode with "The table of X has no primary keys, but the template
+     * ... ${rowtype_primary_key}". Drop them here, with a log line, so the remaining tables still
+     * sync.
+     */
+    private static List<CatalogTable> dropTablesWithoutPrimaryKey(
+            List<CatalogTable> catalogTables) {
+        List<CatalogTable> retained = new ArrayList<>(catalogTables.size());
+        for (CatalogTable catalogTable : catalogTables) {
+            if (hasPrimaryKey(catalogTable)) {
+                retained.add(catalogTable);
+                continue;
+            }
+            log.warn(
+                    "Skip table [{}]: no primary key. CDC requires a primary key, and the sink"
+                            + " create-table template cannot fill ${{rowtype_primary_key}} for it;"
+                            + " skipped so that the rest of the job stays runnable. Narrow"
+                            + " table-pattern/table-names to exclude it if that was not intended.",
+                    catalogTable.getTablePath());
+        }
+        return retained;
+    }
+
+    private static boolean hasPrimaryKey(CatalogTable catalogTable) {
+        TableSchema schema = catalogTable.getTableSchema();
+        PrimaryKey primaryKey = schema == null ? null : schema.getPrimaryKey();
+        return primaryKey != null
+                && primaryKey.getColumnNames() != null
+                && !primaryKey.getColumnNames().isEmpty();
     }
 }
