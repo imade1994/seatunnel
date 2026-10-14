@@ -190,9 +190,6 @@ public class TdengineConnectorDeserializationSchema
                 }
                 break;
             case BIGINT:
-            case INT:
-            case SMALLINT:
-            case TINYINT:
                 if (value instanceof String) {
                     return Long.parseLong((String) value);
                 }
@@ -200,13 +197,54 @@ public class TdengineConnectorDeserializationSchema
                     return ((Number) value).longValue();
                 }
                 break;
+                // TMQ hands back a Long (or a numeric string) for every integer column, so the
+                // declared
+                // type has to be applied here. Without it the row carries a Long where its schema
+                // says
+                // INT/SMALLINT/TINYINT and the sink fails with e.g. "class java.lang.Long cannot be
+                // cast
+                // to class java.lang.Integer" while serialising to JSON.
+            case INT:
+                if (value instanceof String) {
+                    return Integer.parseInt((String) value);
+                }
+                if (value instanceof Number) {
+                    return ((Number) value).intValue();
+                }
+                break;
+            case SMALLINT:
+                if (value instanceof String) {
+                    return Short.parseShort((String) value);
+                }
+                if (value instanceof Number) {
+                    return ((Number) value).shortValue();
+                }
+                break;
+            case TINYINT:
+                if (value instanceof String) {
+                    return Byte.parseByte((String) value);
+                }
+                if (value instanceof Number) {
+                    return ((Number) value).byteValue();
+                }
+                break;
             case DOUBLE:
-            case FLOAT:
                 if (value instanceof String) {
                     return Double.parseDouble((String) value);
                 }
                 if (value instanceof Number) {
                     return ((Number) value).doubleValue();
+                }
+                break;
+                // Same reason as the integer cases above: a Double where the schema says FLOAT
+                // fails
+                // with "class java.lang.Double cannot be cast to class java.lang.Float".
+            case FLOAT:
+                if (value instanceof String) {
+                    return Float.parseFloat((String) value);
+                }
+                if (value instanceof Number) {
+                    return ((Number) value).floatValue();
                 }
                 break;
             case BOOLEAN:
