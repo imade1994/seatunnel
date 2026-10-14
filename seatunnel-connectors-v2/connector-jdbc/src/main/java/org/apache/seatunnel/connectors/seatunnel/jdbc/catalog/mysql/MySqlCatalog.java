@@ -105,9 +105,21 @@ public class MySqlCatalog extends AbstractJdbcCatalog {
         return "SHOW DATABASES;";
     }
 
+    /**
+     * Tables and views are two disjoint sets: {@code SHOW TABLES} used to return both, which made
+     * the same object show up in {@link #getListViewSql} as well. Only base tables are listed here.
+     * A view is still usable as a source - declaring it explicitly with a {@code query} goes
+     * through {@link #getTableWithConditionSql}, not through this list - it simply is not picked up
+     * by pattern-based table expansion.
+     */
     @Override
     protected String getListTableSql(String databaseName) {
-        return "SHOW TABLES;";
+        return "SHOW FULL TABLES WHERE Table_type = 'BASE TABLE';";
+    }
+
+    @Override
+    protected String getListViewSql(String databaseName) {
+        return "SHOW FULL TABLES WHERE Table_type = 'VIEW';";
     }
 
     @Override

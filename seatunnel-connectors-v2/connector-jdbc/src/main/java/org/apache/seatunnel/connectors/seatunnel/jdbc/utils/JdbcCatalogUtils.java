@@ -51,12 +51,15 @@ import java.sql.Connection;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -64,6 +67,11 @@ import java.util.stream.Collectors;
 public class JdbcCatalogUtils {
     private static final String DEFAULT_CATALOG_NAME = "jdbc_catalog";
     private static final String DOT_PLACEHOLDER = "__$DOT$__";
+
+    /**
+     * Cap the view names printed per database so a database with many views cannot flood the log.
+     */
+    private static final int VIEW_LOG_PREVIEW_LIMIT = 10;
 
     public static Map<TablePath, JdbcSourceTable> getTables(
             JdbcConnectionConfig jdbcConnectionConfig, List<JdbcSourceTableConfig> tablesConfig)
@@ -513,8 +521,33 @@ public class JdbcCatalogUtils {
                 return;
             }
 
+            // Tables and views are disjoint sets (see MySqlCatalog#getListTableSql), so a view no
+            // longer reaches the loop below. Collect the views anyway: otherwise a view the user
+            // expected to be synced would vanish with no trace in the logs.
+            Map<String, Set<String>> viewsByDatabase = new HashMap<>();
+            List<String> databases = collectDatabases(catalogTables);
+            for (String database : databases) {
+                viewsByDatabase.put(database, listViewNames(jdbcCatalog, database));
+            }
+
+            // Skip candidates without a primary key. A primary-key-less table leaves
+            // ${rowtype_primary_key} in the sink's save_mode_create_template unfilled, which fails
+            // the whole job at init; skipping it at table discovery keeps the job runnable.
+            int kept = 0;
+            int skipped = 0;
             for (CatalogTable catalogTable : catalogTables) {
                 TablePath path = catalogTable.getTableId().toTablePath();
+
+                if (!hasPrimaryKey(catalogTable)) {
+                    skipped++;
+                    log.warn(
+                            "Skip {} [{}]: no primary key, ${rowtype_primary_key} cannot be filled in"
+                                    + " the sink create-table template; skipped to keep the job runnable"
+                                    + " (to sync it anyway, declare it with `query` instead of a table path)",
+                            isView(viewsByDatabase, path) ? "view" : "table",
+                            path.getFullName());
+                    continue;
+                }
 
                 JdbcSourceTable jdbcSourceTable =
                         JdbcSourceTable.builder()
@@ -529,13 +562,98 @@ public class JdbcCatalogUtils {
                                 .build();
 
                 result.put(path, jdbcSourceTable);
+                kept++;
                 log.info("Found table matching regex pattern: {}", path);
             }
 
-            log.info("Found {} tables matching regex pattern: {}", catalogTables.size(), tablePath);
+            log.info(
+                    "Found {} tables matching regex pattern: {} ({} skipped: no primary key)",
+                    kept,
+                    tablePath,
+                    skipped);
+            if (kept == 0) {
+                log.error(
+                        "Regex pattern {} matched {} object(s) but all of them lack a primary key,"
+                                + " so nothing is left to sync",
+                        tablePath,
+                        skipped);
+            }
+            for (String database : databases) {
+                Set<String> views = viewsByDatabase.get(database);
+                if (views == null || views.isEmpty()) {
+                    continue;
+                }
+                log.info(
+                        "Database {} has {} view(s){}; views are not part of pattern-based table"
+                                + " expansion - they have no primary key and cannot be auto-created on"
+                                + " the sink. Declare a view explicitly with `query` if it must be synced",
+                        database,
+                        views.size(),
+                        views.size() > VIEW_LOG_PREVIEW_LIMIT
+                                ? " (first " + VIEW_LOG_PREVIEW_LIMIT + ": " + preview(views) + ")"
+                                : " " + views);
+            }
         } catch (Exception e) {
             log.warn("Error processing table path with regex: {}", tablePath, e);
             throw new SQLException("Failed to process regex table path: " + tablePath, e);
+        }
+    }
+
+    /** A table is only usable as a source for auto table creation when it carries a primary key. */
+    private static boolean hasPrimaryKey(CatalogTable catalogTable) {
+        TableSchema schema = catalogTable.getTableSchema();
+        PrimaryKey primaryKey = schema == null ? null : schema.getPrimaryKey();
+        return primaryKey != null
+                && primaryKey.getColumnNames() != null
+                && !primaryKey.getColumnNames().isEmpty();
+    }
+
+    /**
+     * Tell whether the object behind {@code path} is a view, for logging purposes only. A dialect
+     * that does not implement {@code listViews} contributes an empty set, so the object is then
+     * reported as a table without a primary key.
+     */
+    private static boolean isView(Map<String, Set<String>> viewsByDatabase, TablePath path) {
+        Set<String> views = viewsByDatabase.get(path.getDatabaseName());
+        return views != null && views.contains(path.getTableName());
+    }
+
+    /** Databases covered by the matched tables, sorted so the discovery logs are deterministic. */
+    private static List<String> collectDatabases(List<CatalogTable> catalogTables) {
+        Set<String> databases = new TreeSet<>();
+        for (CatalogTable catalogTable : catalogTables) {
+            databases.add(catalogTable.getTableId().toTablePath().getDatabaseName());
+        }
+        return new ArrayList<>(databases);
+    }
+
+    private static List<String> preview(Set<String> views) {
+        List<String> names = new ArrayList<>(views);
+        return names.subList(0, Math.min(VIEW_LOG_PREVIEW_LIMIT, names.size()));
+    }
+
+    private static Set<String> listViewNames(AbstractJdbcCatalog jdbcCatalog, String databaseName) {
+        try {
+            List<String> views = jdbcCatalog.listViews(databaseName);
+            Set<String> names = new HashSet<>();
+            for (String view : views) {
+                if (StringUtils.isBlank(view)) {
+                    continue;
+                }
+                // listViews returns fully qualified names on some dialects and bare names on
+                // others.
+                int separator = view.lastIndexOf('.');
+                names.add(separator < 0 ? view : view.substring(separator + 1));
+            }
+            return names;
+        } catch (Exception e) {
+            log.info(
+                    "Catalog {} cannot list views of database {} ({}); view or table cannot be told"
+                            + " apart, reporting as a table",
+                    jdbcCatalog.getClass().getSimpleName(),
+                    databaseName,
+                    e.getMessage());
+            return Collections.emptySet();
         }
     }
 }
